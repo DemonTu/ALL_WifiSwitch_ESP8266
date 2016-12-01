@@ -16,6 +16,7 @@
 
 #include "espconn.h"
 #include "user_esp_platform.h"
+#if ESP_PLATFORM
 
 #define ESP_DEBUG
 
@@ -342,3 +343,6 @@ user_platform_timer_start(char *pbuffer)
         user_platform_timer_first_start(count);
     }
 }
+
+#endif
+

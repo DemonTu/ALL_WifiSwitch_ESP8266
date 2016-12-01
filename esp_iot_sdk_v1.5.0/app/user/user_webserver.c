@@ -342,11 +342,6 @@ JSONTREE_OBJECT(get_station_tree,
 JSONTREE_OBJECT(set_station_tree,
                 JSONTREE_PAIR("Connect_Station", &set_station_config_tree));
 
-//JSONTREE_OBJECT(get_wifi_station_info_tree,
-//                JSONTREE_PAIR("Station", &get_station_tree));
-//JSONTREE_OBJECT(set_wifi_station_info_tree,
-//                JSONTREE_PAIR("station", &set_station_tree));
-
 /******************************************************************************
  * FunctionName : wifi_softap_get
  * Description  : set up the softap paramer as a JSON format

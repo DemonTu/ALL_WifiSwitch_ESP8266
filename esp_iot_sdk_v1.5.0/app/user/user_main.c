@@ -15,6 +15,7 @@
 
 #include "user_devicefind.h"
 #include "user_webserver.h"
+#include "driver/uart.h"
 
 #if ESP_PLATFORM
 #include "user_esp_platform.h"
@@ -24,6 +25,20 @@ void user_rf_pre_init(void)
 {
 }
 
+void ICACHE_FLASH_ATTR
+user_set_station_config(void)
+{
+
+	struct station_config stationConf;
+	os_memset(&stationConf, 0, sizeof(stationConf));
+	stationConf.bssid_set = 0; //need not check MAC address of AP
+	os_memcpy(&stationConf.ssid, "FJXMYKD", 7);
+	os_memcpy(&stationConf.password, "FJXMYKD456123", 13);
+
+	wifi_station_set_config_current(&stationConf);
+}
+
+
 /******************************************************************************
  * FunctionName : user_init
  * Description  : entry of user application, init user function here
@@ -32,7 +47,14 @@ void user_rf_pre_init(void)
 *******************************************************************************/
 void user_init(void)
 {
+	uart_init(BIT_RATE_115200, BIT_RATE_115200);
     os_printf("SDK version:%s\n", system_get_sdk_version());
+
+	/* 设置WiFi为STA模式，连接指定的AP */
+	wifi_set_opmode_current(STATION_MODE);
+	user_set_station_config();
+	
+    os_printf("sta=%d,name=%s, %d\r\n", wifi_get_opmode(), wifi_station_get_hostname());
 
 #if ESP_PLATFORM
     /*Initialization of the peripheral drivers*/

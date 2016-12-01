@@ -2,12 +2,12 @@
 
 echo "gen_misc.sh version 20161116"
 echo ""
+
 boot=new
 app=1
-
 spi_speed=80
 spi_mode=DOUT
-spi_size_map=6
+spi_size_map=4
 
 echo ""
 touch user/user_main.c

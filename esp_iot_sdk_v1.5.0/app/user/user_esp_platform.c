@@ -30,19 +30,10 @@
 #define ESP_DBG
 #endif
 
-#define ACTIVE_FRAME    "{\"nonce\": %d,\"path\": \"/v1/device/activate/\", \"method\": \"POST\", \"body\": {\"encrypt_method\": \"PLAIN\", \"token\": \"%s\", \"bssid\": \""MACSTR"\",\"rom_version\":\"%s\"}, \"meta\": {\"Authorization\": \"token %s\"}}\n"
-
 #include "user_plug.h"
 
-#define RESPONSE_FRAME  "{\"status\": 200, \"datapoint\": {\"x\": %d}, \"nonce\": %d, \"deliver_to_device\": true}\n"
-#define FIRST_FRAME     "{\"nonce\": %d, \"path\": \"/v1/device/identify\", \"method\": \"GET\",\"meta\": {\"Authorization\": \"token %s\"}}\n"
 
-#define UPGRADE_FRAME  "{\"path\": \"/v1/messages/\", \"method\": \"POST\", \"meta\": {\"Authorization\": \"token %s\"},\
-\"get\":{\"action\":\"%s\"},\"body\":{\"pre_rom_version\":\"%s\",\"rom_version\":\"%s\"}}\n"
 
-#define BEACON_FRAME    "{\"path\": \"/v1/ping/\", \"method\": \"POST\",\"meta\": {\"Authorization\": \"token %s\"}}\n"
-#define RPC_RESPONSE_FRAME  "{\"status\": 200, \"nonce\": %d, \"deliver_to_device\": true}\n"
-#define TIMER_FRAME     "{\"body\": {}, \"get\":{\"is_humanize_format_simple\":\"true\"},\"meta\": {\"Authorization\": \"Token %s\"},\"path\": \"/v1/device/timers/\",\"post\":{},\"method\": \"GET\"}\n"
 #define pheadbuffer "Connection: keep-alive\r\n\
 Cache-Control: no-cache\r\n\
 User-Agent: Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.101 Safari/537.36 \r\n\
@@ -205,7 +196,6 @@ user_esp_platform_get_info(struct espconn *pconn, uint8 *pbuffer)
 
     if (pbuf != NULL) 
 	{
-        os_sprintf(pbuf, RESPONSE_FRAME, user_plug_get_status(), nonce);
         ESP_DBG("%s\n", pbuf);
 #ifdef CLIENT_SSL_ENABLE
         espconn_secure_sent(pconn, pbuf, os_strlen(pbuf));
@@ -354,12 +344,10 @@ user_esp_platform_sent(struct espconn *pespconn)
 
             wifi_get_macaddr(STATION_IF, bssid);
 
-            os_sprintf(pbuf, ACTIVE_FRAME, active_nonce, token, MAC2STR(bssid),iot_version, devkey);
         }
         else 
 		{
             nonce = os_random() & 0x7FFFFFFF;
-            os_sprintf(pbuf, FIRST_FRAME, nonce , devkey);
         }
 
         ESP_DBG("%s\n", pbuf);
@@ -411,7 +399,6 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
                 char *pbuf = (char *)os_zalloc(packet_size);
 
                 if (pbuf != NULL) {
-                    os_sprintf(pbuf, BEACON_FRAME, devkey);
 
 #ifdef CLIENT_SSL_ENABLE
                     espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
@@ -449,7 +436,6 @@ user_platform_rpc_set_rsp(struct espconn *pespconn, int nonce)
         return;
     }
 
-    os_sprintf(pbuf, RPC_RESPONSE_FRAME, nonce);
     ESP_DBG("%s\n", pbuf);
 #ifdef CLIENT_SSL_ENABLE
     espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
@@ -476,7 +462,6 @@ user_platform_timer_get(struct espconn *pespconn)
         return;
     }
 
-    os_sprintf(pbuf, TIMER_FRAME, devkey);
     ESP_DBG("%s\n", pbuf);
 #ifdef CLIENT_SSL_ENABLE
     espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
@@ -507,7 +492,6 @@ user_esp_platform_upgrade_rsp(void *arg)
     if (server->upgrade_flag == true) {
         ESP_DBG("user_esp_platform_upgarde_successfully\n");
         action = "device_upgrade_success";
-        os_sprintf(pbuf, UPGRADE_FRAME, devkey, action, server->pre_version, server->upgrade_version);
         ESP_DBG("%s\n",pbuf);
 
 #ifdef CLIENT_SSL_ENABLE
@@ -523,7 +507,6 @@ user_esp_platform_upgrade_rsp(void *arg)
     } else {
         ESP_DBG("user_esp_platform_upgrade_failed\n");
         action = "device_upgrade_failed";
-        os_sprintf(pbuf, UPGRADE_FRAME, devkey, action,server->pre_version, server->upgrade_version);
         ESP_DBG("%s\n",pbuf);
 
 #ifdef CLIENT_SSL_ENABLE
