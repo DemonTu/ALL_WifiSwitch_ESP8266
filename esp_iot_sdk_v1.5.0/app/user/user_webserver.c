@@ -895,7 +895,7 @@ data_send(void *arg, bool responseOK, char *psend)
     } 
 	else 
 	{
-        os_sprintf(httphead, "HTTP/1.0 400 BadRequest\r\n\Content-Length: 0\r\nServer: lwIP/1.4.0\r\n\n");
+        os_sprintf(httphead, "HTTP/1.0 400 BadRequest\r\nContent-Length: 0\r\nServer: lwIP/1.4.0\r\n\n");
         length = os_strlen(httphead);
     }
 
