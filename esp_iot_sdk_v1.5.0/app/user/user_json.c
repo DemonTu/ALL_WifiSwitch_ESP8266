@@ -99,6 +99,10 @@ int ICACHE_FLASH_ATTR
 json_putchar(int c)
 {
     if (json_buf != NULL && pos <= size) {
+		if ((c=='\r') || (c=='\n'))
+		{
+			return c;
+		}
         json_buf[pos++] = c;
         return c;
     }

@@ -2,7 +2,6 @@
 #define __USER_CONFIG_H__
 
 #define ESP_PLATFORM        1
-#define LEWEI_PLATFORM      0
 
 #define USE_OPTIMIZE_PRINTF
 
@@ -19,10 +18,7 @@
 #define ESP_DOMAIN      "iot.espressif.cn"
 #endif
 
-
-#define BEACON_TIMEOUT  150000000		// 心跳超时
-#define BEACON_TIME     50000			// 心跳周期
-
+#define BEACON_TIME     5000			// 心跳周期 50s 测试时5000=5s
 
 #define AP_CACHE           0
 
@@ -30,7 +26,6 @@
 #define AP_CACHE_NUMBER    5
 #endif
 
-#elif LEWEI_PLATFORM
 #endif
 
 #endif

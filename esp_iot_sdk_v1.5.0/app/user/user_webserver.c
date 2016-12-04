@@ -310,7 +310,6 @@ wifi_station_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser
                     jsonparse_next(parser);
                     jsonparse_next(parser);
                     jsonparse_copy_value(parser, buffer, sizeof(buffer));
-                    user_esp_platform_set_token(buffer);
                 }
 
 #endif
@@ -417,18 +416,24 @@ wifi_softap_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
     int type;
     uint8 softap_tree;
 
-    while ((type = jsonparse_next(parser)) != 0) {
-        if (type == JSON_TYPE_PAIR_NAME) {
+    while ((type = jsonparse_next(parser)) != 0) 
+	{
+        if (type == JSON_TYPE_PAIR_NAME) 
+		{
             char buffer[64];
             os_bzero(buffer, 64);
 
-            if (jsonparse_strcmp_value(parser, "Station") == 0) {
+            if (jsonparse_strcmp_value(parser, "Station") == 0) 
+			{
                 softap_tree = 0;
-            } else if (jsonparse_strcmp_value(parser, "Softap") == 0) {
+            } 
+			else if (jsonparse_strcmp_value(parser, "Softap") == 0)
+			{
                 softap_tree = 1;
             }
 
-            if (softap_tree) {
+            if (softap_tree) 
+			{
                 if (jsonparse_strcmp_value(parser, "authmode") == 0) {
                     jsonparse_next(parser);
                     jsonparse_next(parser);
@@ -649,7 +654,8 @@ parse_url(char *precv, URL_Frame *purl_frame)
         pbuffer ++;
         str = (char *)os_strstr(pbuffer, "?");
 
-        if (str != NULL) {
+        if (str != NULL) 
+		{
             length = str - pbuffer;
             os_memcpy(purl_frame->pSelect, pbuffer, length);
             str ++;
@@ -701,14 +707,16 @@ save_data(char *precv, uint16 length)
 
     ptemp = (char *)os_strstr(precv, "\r\n\r\n");
 
-    if (ptemp != NULL) {
+    if (ptemp != NULL) 
+	{
         length -= ptemp - precv;
         length -= 4;
         totallength += length;
         headlength = ptemp - precv + 4;
         pdata = (char *)os_strstr(precv, "Content-Length: ");
 
-        if (pdata != NULL) {
+        if (pdata != NULL) 
+		{
             pdata += 16;
             precvbuffer = (char *)os_strstr(pdata, "\r\n");
 
@@ -716,14 +724,17 @@ save_data(char *precv, uint16 length)
                 os_memcpy(length_buf, pdata, precvbuffer - pdata);
                 dat_sumlength = atoi(length_buf);
             }
-        } else {
+        } 
+		else 
+		{
         	if (totallength != 0x00){
         		totallength = 0;
         		dat_sumlength = 0;
         		return false;
         	}
         }
-        if ((dat_sumlength + headlength) >= 1024) {
+        if ((dat_sumlength + headlength) >= 1024) 
+		{
         	precvbuffer = (char *)os_zalloc(headlength + 1);
             os_memcpy(precvbuffer, precv, headlength + 1);
         } else {
@@ -733,21 +744,27 @@ save_data(char *precv, uint16 length)
     }
 	else 
 	{
-        if (precvbuffer != NULL) {
+        if (precvbuffer != NULL) 
+		{
             totallength += length;
             os_memcpy(precvbuffer + os_strlen(precvbuffer), precv, length);
-        } else {
+        }
+		else 
+		{
             totallength = 0;
             dat_sumlength = 0;
             return false;
         }
     }
 
-    if (totallength == dat_sumlength) {
+    if (totallength == dat_sumlength) 
+	{
         totallength = 0;
         dat_sumlength = 0;
         return true;
-    } else {
+    }
+	else 
+	{
         return false;
     }
 }
@@ -1564,7 +1581,8 @@ webserver_recv(void *arg, char *pusrdata, unsigned short length)
         _temp_exit:
             ;
     }
-    else if(upgrade_lock == 1){
+    else if(upgrade_lock == 1)
+	{
     	local_upgrade_download(ptrespconn,pusrdata, length);
 		if (precvbuffer != NULL){
 			os_free(precvbuffer);

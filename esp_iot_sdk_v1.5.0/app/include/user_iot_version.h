@@ -19,13 +19,13 @@
 #define NONE_UPGRADE      0
 
 #if	ONLINE_UPGRADE
-#define UPGRADE_FALG	"O"
+	#define UPGRADE_FALG	"O"
 #elif  LOCAL_UPGRADE
-#define UPGRADE_FALG	"l"
+	#define UPGRADE_FALG	"l"
 #elif  ALL_UPGRADE
-#define UPGRADE_FALG	"a"
+	#define UPGRADE_FALG	"a"
 #elif NONE_UPGRADE
-#define UPGRADE_FALG	"n"
+	#define UPGRADE_FALG	"n"
 #endif
 
 #define IOT_VERSION

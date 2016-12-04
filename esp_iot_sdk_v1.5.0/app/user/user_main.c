@@ -47,15 +47,30 @@ user_set_station_config(void)
 *******************************************************************************/
 void user_init(void)
 {
+	struct rst_info *rtc_info = system_get_rst_info();
+	
 	uart_init(BIT_RATE_115200, BIT_RATE_115200);
-    os_printf("SDK version:%s\n", system_get_sdk_version());
+
+	os_printf("reset reason: %x\n", rtc_info->reason);
+
+	if (rtc_info->reason == REASON_WDT_RST ||
+		rtc_info->reason == REASON_EXCEPTION_RST ||
+		rtc_info->reason == REASON_SOFT_WDT_RST) 
+	{
+		if (rtc_info->reason == REASON_EXCEPTION_RST) 
+		{
+			os_printf("Fatal exception (%d):\n", rtc_info->exccause);
+		}
+	}
+	
+	os_printf("SDK version:%s\n", system_get_sdk_version());
 
 	/* 设置WiFi为STA模式，连接指定的AP */
 	wifi_set_opmode_current(STATION_MODE);
 	user_set_station_config();
 	
-    os_printf("sta=%d,name=%s, %d\r\n", wifi_get_opmode(), wifi_station_get_hostname());
-
+    os_printf("name=%s, %d\r\n", wifi_station_get_hostname());
+	
 #if ESP_PLATFORM
     /*Initialization of the peripheral drivers*/
     /*For light demo , it is user_light_init();*/

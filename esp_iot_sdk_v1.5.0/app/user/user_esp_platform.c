@@ -15,12 +15,17 @@
 #include "osapi.h"
 #include "user_interface.h"
 
+#include "HttpTool.h"
+
 #include "espconn.h"
 #include "user_esp_platform.h"
 #include "user_iot_version.h"
 #include "upgrade.h"
 
+#include "user_json.h"
+
 #if ESP_PLATFORM
+#include "user_plug.h"
 
 #define ESP_DEBUG
 
@@ -30,35 +35,282 @@
 #define ESP_DBG
 #endif
 
-#include "user_plug.h"
-
-
-
-#define pheadbuffer "Connection: keep-alive\r\n\
-Cache-Control: no-cache\r\n\
-User-Agent: Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.101 Safari/537.36 \r\n\
-Accept: */*\r\n\
-Authorization: token %s\r\n\
-Accept-Encoding: gzip,deflate,sdch\r\n\
-Accept-Language: zh-CN,zh;q=0.8\r\n\r\n"
-
-LOCAL uint8 ping_status;
-LOCAL os_timer_t beacon_timer;
-
 #ifdef USE_DNS
 ip_addr_t esp_server_ip;
 #endif
 
-LOCAL struct espconn user_conn;
-LOCAL struct _esp_tcp user_tcp;
-LOCAL os_timer_t client_timer;
- struct esp_platform_saved_param esp_param;
+LOCAL uint8 ping_status;
 LOCAL uint8 device_status;
 LOCAL uint8 device_recon_count = 0;
-LOCAL uint32 active_nonce = 0;
 LOCAL uint8 iot_version[20] = {0};
-struct rst_info rtc_info;
+
+LOCAL os_timer_t beacon_timer;
+LOCAL os_timer_t client_timer;
+
+LOCAL struct espconn user_conn;
+LOCAL struct _esp_tcp user_tcp;
+
+struct esp_platform_saved_param esp_param;
+
+
+/******************************************************************************/
 void user_esp_platform_check_ip(uint8 reset_flag);
+
+
+/******************************************************************************/
+// 注册json结构
+/******************************************************************************
+ * FunctionName : regFillData
+ * Description  : set up the device reg paramer as a JSON format
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+regFillData(struct jsontree_context *js_ctx)
+{
+    const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
+    char string[32];
+
+    if (os_strncmp(path, "cmd", 3) == 0) 
+	{
+        os_sprintf(string, "REG");
+    } 
+	else if (os_strncmp(path, "key", 3) == 0) 
+    {
+    	// 有待修改
+        os_sprintf(string, "%s", "12345678");
+    } 
+	else if (os_strncmp(path, "deviceID", 8) == 0) 
+    {
+    	// 有待修改
+    	os_sprintf(string, "%s", "0123456789000000");
+    }
+
+    jsontree_write_string(js_ctx, string);
+
+    return 0;
+}
+
+LOCAL struct jsontree_callback reg_callback =
+    JSONTREE_CALLBACK(regFillData, NULL);
+
+JSONTREE_OBJECT(reg_request_tree,
+                JSONTREE_PAIR("cmd", 	  &reg_callback),
+                JSONTREE_PAIR("key",      &reg_callback),
+                JSONTREE_PAIR("deviceID", &reg_callback),
+                );
+JSONTREE_OBJECT(reg_tree,
+                JSONTREE_PAIR("Request", &reg_request_tree));
+
+JSONTREE_OBJECT(RegTree,
+                JSONTREE_PAIR("reg", &reg_tree));
+
+
+/******************************************************************************/
+//心跳包Json结构
+/******************************************************************************
+ * FunctionName : hbFillData
+ * Description  : set up the device HB paramer as a JSON format
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+hbFillData(struct jsontree_context *js_ctx)
+{
+    const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
+    char string[32];
+
+    if (os_strncmp(path, "cmd", 3) == 0) 
+	{
+        os_sprintf(string, "PING");
+    } 
+	else if (os_strncmp(path, "key", 3) == 0) 
+    {
+    	// 有待修改
+        os_sprintf(string, "%s", "12345678");
+    } 
+	else if (os_strncmp(path, "deviceID", 8) == 0) 
+    {
+    	// 有待修改
+    	os_sprintf(string, "%s", "0123456789000000");
+    }
+	else if (os_strncmp(path, "BID") == 0)
+	{
+		 jsontree_write_int(js_ctx, 0x55aa); //esp_param.BID);
+		 return 0;
+	}
+
+    jsontree_write_string(js_ctx, string);
+
+    return 0;
+}
+
+LOCAL struct jsontree_callback hb_callback =
+    JSONTREE_CALLBACK(hbFillData, NULL);
+
+JSONTREE_OBJECT(hb_request_tree,
+                JSONTREE_PAIR("cmd", 	  &hb_callback),
+                JSONTREE_PAIR("key",      &hb_callback),
+                JSONTREE_PAIR("deviceID", &hb_callback),
+				JSONTREE_PAIR("BID", 	  &hb_callback),
+                );
+JSONTREE_OBJECT(hb_tree,
+                JSONTREE_PAIR("Request", &hb_request_tree));
+
+JSONTREE_OBJECT(HBTree,
+                JSONTREE_PAIR("hb", &hb_tree));
+
+/******************************************************************************/
+//远程控制开关
+#if PLUG_DEVICE
+/******************************************************************************
+ * FunctionName : status_get
+ * Description  : set up the device status as a JSON format
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+rcFillData(struct jsontree_context *js_ctx)
+{
+    const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
+    char string[32];
+
+    if (os_strncmp(path, "cmd", 3) == 0) 
+	{
+        os_sprintf(string, "RCACK");
+    } 
+	else if (os_strncmp(path, "key", 3) == 0) 
+    {
+    	// 有待修改
+        os_sprintf(string, "%s", "12345678");
+    } 
+	else if (os_strncmp(path, "deviceID", 8) == 0) 
+    {
+    	// 有待修改
+    	os_sprintf(string, "%s", "0123456789000000");
+    }
+	else if (os_strncmp(path, "status", 8) == 0) 
+	{
+        jsontree_write_int(js_ctx, user_plug_get_status());	
+	}
+	else if (os_strncmp(path, "BID") == 0)
+	{
+		 jsontree_write_int(js_ctx, esp_param.BID);
+		 return 0;
+	}
+
+    jsontree_write_string(js_ctx, string);
+
+    return 0;
+}
+
+/******************************************************************************
+ * FunctionName : status_set
+ * Description  : parse the device status parmer as a JSON format
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ *                parser -- A pointer to a JSON parser state
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
+{
+    int type;
+	int reqFlag = 0;
+	int errorFlag = 0;
+    char buffer[20];	
+	 
+    while ((type = jsonparse_next(parser)) != 0)
+	{
+        if (type == JSON_TYPE_PAIR_NAME) 
+		{
+            os_bzero(buffer, 20);
+			if ((jsonparse_strcmp_value(parser, "Request")==0) || (reqFlag==1))
+			{
+				reqFlag = 1;
+	            if (jsonparse_strcmp_value(parser, "cmd") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, "RC", 2))
+					{
+						errorFlag++;
+					}
+	            }
+				else if (jsonparse_strcmp_value(parser, "key") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_param.devkey, 
+										sizeof(esp_param.devkey)))
+					{
+						errorFlag++;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "deviceID") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_param.deviceID, 
+										sizeof(esp_param.deviceID)))
+					{
+						errorFlag++;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "status") == 0)
+				{
+					if (0 == errorFlag)
+					{
+						jsonparse_next(parser);
+	                	jsonparse_next(parser);
+	                	user_plug_set_status(jsonparse_get_value_as_int(parser));
+					}
+				}
+				else
+				{
+					// 错误码
+				}
+				ESP_DBG("%s\n", buffer);
+			}
+			else
+			{
+				// 错误码
+			}
+        }
+    }
+
+    return 0;
+}
+
+LOCAL struct jsontree_callback rc_status_callback =
+    JSONTREE_CALLBACK(rcFillData, rc_status_set);
+//response
+JSONTREE_OBJECT(get_status_tree,
+                JSONTREE_PAIR("cmd",      &rc_status_callback),
+				JSONTREE_PAIR("key",      &rc_status_callback),
+				JSONTREE_PAIR("deviceID", &rc_status_callback),
+				JSONTREE_PAIR("status",   &rc_status_callback),
+				JSONTREE_PAIR("BID",      &rc_status_callback)
+                );
+JSONTREE_OBJECT(response_tree,
+                JSONTREE_PAIR("Response", &get_status_tree));
+JSONTREE_OBJECT(RcResTree,
+                JSONTREE_PAIR("rcResponse", &response_tree));
+//request
+JSONTREE_OBJECT(set_status_tree,
+                JSONTREE_PAIR("cmd",      &rc_status_callback),
+				JSONTREE_PAIR("ked",      &rc_status_callback),
+				JSONTREE_PAIR("deviceID", &rc_status_callback),
+				JSONTREE_PAIR("status",   &rc_status_callback)
+                );
+JSONTREE_OBJECT(request_tree,
+                JSONTREE_PAIR("Request", &set_status_tree));
+JSONTREE_OBJECT(RcReqTree,
+                JSONTREE_PAIR("rcRequest", &request_tree));
+#endif
+
 
 /******************************************************************************
  * FunctionName : user_esp_platform_get_token
@@ -66,14 +318,10 @@ void user_esp_platform_check_ip(uint8 reset_flag);
  * Parameters   : token -- the parame point which write the flash
  * Returns      : none
 *******************************************************************************/
-void ICACHE_FLASH_ATTR
-user_esp_platform_get_token(uint8_t *token)
+uint16 ICACHE_FLASH_ATTR
+user_esp_platform_get_bid(void)
 {
-    if (token == NULL) {
-        return;
-    }
-
-    os_memcpy(token, esp_param.token, sizeof(esp_param.token));
+	return esp_param.BID;
 }
 
 /******************************************************************************
@@ -83,15 +331,9 @@ user_esp_platform_get_token(uint8_t *token)
  * Returns      : none
 *******************************************************************************/
 void ICACHE_FLASH_ATTR
-user_esp_platform_set_token(uint8_t *token)
+user_esp_platform_set_bid(uint16_t BID)
 {
-    if (token == NULL) {
-        return;
-    }
-
-    esp_param.activeflag = 0;
-    os_memcpy(esp_param.token, token, os_strlen(token));
-
+	esp_param.BID = BID;
     system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
 }
 
@@ -126,7 +368,8 @@ user_esp_platform_get_connect_status(void)
 {
     uint8 status = wifi_station_get_connect_status();
 
-    if (status == STATION_GOT_IP) {
+    if (status == STATION_GOT_IP) 
+	{
         status = (device_status == 0) ? DEVICE_CONNECTING : device_status;
     }
 
@@ -134,48 +377,6 @@ user_esp_platform_get_connect_status(void)
     return status;
 }
 
-/******************************************************************************
- * FunctionName : user_esp_platform_parse_nonce
- * Description  : parse the device nonce
- * Parameters   : pbuffer -- the recivce data point
- * Returns      : the nonce
-*******************************************************************************/
-int ICACHE_FLASH_ATTR
-user_esp_platform_parse_nonce(char *pbuffer)
-{
-    char *pstr = NULL;
-    char *pparse = NULL;
-    char noncestr[11] = {0};
-    int nonce = 0;
-    pstr = (char *)os_strstr(pbuffer, "\"nonce\": ");
-
-    if (pstr != NULL) {
-        pstr += 9;
-        pparse = (char *)os_strstr(pstr, ",");
-
-        if (pparse != NULL) {
-            os_memcpy(noncestr, pstr, pparse - pstr);
-        } else {
-            pparse = (char *)os_strstr(pstr, "}");
-
-            if (pparse != NULL) {
-                os_memcpy(noncestr, pstr, pparse - pstr);
-            } else {
-                pparse = (char *)os_strstr(pstr, "]");
-
-                if (pparse != NULL) {
-                    os_memcpy(noncestr, pstr, pparse - pstr);
-                } else {
-                    return 0;
-                }
-            }
-        }
-
-        nonce = atoi(noncestr);
-    }
-
-    return nonce;
-}
 
 /******************************************************************************
  * FunctionName : user_esp_platform_get_info
@@ -188,11 +389,8 @@ void ICACHE_FLASH_ATTR
 user_esp_platform_get_info(struct espconn *pconn, uint8 *pbuffer)
 {
     char *pbuf = NULL;
-    int nonce = 0;
 
     pbuf = (char *)os_zalloc(packet_size);
-
-    nonce = user_esp_platform_parse_nonce(pbuffer);
 
     if (pbuf != NULL) 
 	{
@@ -207,33 +405,6 @@ user_esp_platform_get_info(struct espconn *pconn, uint8 *pbuffer)
     }
 }
 
-/******************************************************************************
- * FunctionName : user_esp_platform_set_info
- * Description  : prossing the data and controling the espressif's device
- * Parameters   : pespconn -- the espconn used to connect with host
- *                pbuffer -- prossing the data point
- * Returns      : none
-*******************************************************************************/
-void ICACHE_FLASH_ATTR
-user_esp_platform_set_info(struct espconn *pconn, uint8 *pbuffer)
-{
-    char *pstr = NULL;
-    pstr = (char *)os_strstr(pbuffer, "plug-status");
-
-    if (pstr != NULL) {
-        pstr = (char *)os_strstr(pbuffer, "body");
-
-        if (pstr != NULL) {
-
-            if (os_strncmp(pstr + 27, "1", 1) == 0) {
-                user_plug_set_status(0x01);
-            } else if (os_strncmp(pstr + 27, "0", 1) == 0) {
-                user_plug_set_status(0x00);
-            }
-        }
-    }
-    user_esp_platform_get_info(pconn, pbuffer);
-}
 
 /******************************************************************************
  * FunctionName : user_esp_platform_reconnect
@@ -248,6 +419,7 @@ user_esp_platform_reconnect(struct espconn *pespconn)
 
     user_esp_platform_check_ip(0);
 }
+
 
 /******************************************************************************
  * FunctionName : user_esp_platform_discon_cb
@@ -310,7 +482,7 @@ user_esp_platform_sent_cb(void *arg)
 {
     struct espconn *pespconn = arg;
 
-    ESP_DBG("user_esp_platform_sent_cb\n");
+    ESP_DBG("user_esp_platform_sent_OK\n");
 }
 
 /******************************************************************************
@@ -322,32 +494,22 @@ user_esp_platform_sent_cb(void *arg)
 LOCAL void ICACHE_FLASH_ATTR
 user_esp_platform_sent(struct espconn *pespconn)
 {
-    uint8 devkey[token_size] = {0};
-    uint32 nonce;
     char *pbuf = (char *)os_zalloc(packet_size);
-
-    os_memcpy(devkey, esp_param.devkey, 40);
-
-    if (esp_param.activeflag == 0xFF) 
+	char *jsonbuf = (char *)os_zalloc(httpBody_size); 
+	
+    if ((pbuf!=NULL) && (jsonbuf!=NULL)) 
 	{
-        esp_param.activeflag = 0;
-    }
-
-    if (pbuf != NULL) 
-	{
-        if (esp_param.activeflag == 0) {
-            uint8 token[token_size] = {0};
-            uint8 bssid[6];
-            active_nonce = os_random() & 0x7FFFFFFF;
-
-            os_memcpy(token, esp_param.token, 40);
-
-            wifi_get_macaddr(STATION_IF, bssid);
-
-        }
+        if (esp_param.activeflag != 1) // 待修改
+		{
+            json_ws_send((struct jsontree_value *)&RegTree, "reg", jsonbuf);
+			http_request_data_fill(jsonbuf, pbuf, POST);
+		}
         else 
 		{
-            nonce = os_random() & 0x7FFFFFFF;
+            // 已经注册过了
+            os_free(jsonbuf);
+            os_free(pbuf);
+            return;
         }
 
         ESP_DBG("%s\n", pbuf);
@@ -358,6 +520,7 @@ user_esp_platform_sent(struct espconn *pespconn)
         espconn_sent(pespconn, pbuf, os_strlen(pbuf));
 #endif
 
+		os_free(jsonbuf);
         os_free(pbuf);
     }
 }
@@ -377,18 +540,14 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
 
     if (pespconn->state == ESPCONN_CONNECT) 
 	{
-        if (esp_param.activeflag == 0) 
+        if (esp_param.BID != 0x55aa) 
 		{
             ESP_DBG("please check device is activated.\n");
+			/* 未注册 重新启动注册 */
             user_esp_platform_sent(pespconn);
         }
 		else 
 		{
-            uint8 devkey[token_size] = {0};
-            os_memcpy(devkey, esp_param.devkey, 40);
-
-            ESP_DBG("user_esp_platform_sent_beacon %u\n", system_get_time());
-
             if (ping_status == 0) 
 			{
                 ESP_DBG("user_esp_platform_sent_beacon sent fail!\n");
@@ -397,17 +556,28 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
 			else 
 			{
                 char *pbuf = (char *)os_zalloc(packet_size);
-
-                if (pbuf != NULL) {
-
+					
+                if (pbuf != NULL) 
+				{
+					char *pHttpBody = (char *)os_zalloc(httpBody_size);
+					if (pHttpBody != NULL)
+					{
+						json_ws_send((struct jsontree_value *)&HBTree, "hb", pHttpBody);
+					}
+					else
+					{	
+					}
+					http_request_data_fill(pHttpBody, pbuf, POST);
 #ifdef CLIENT_SSL_ENABLE
                     espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
 #else
                     espconn_sent(pespconn, pbuf, os_strlen(pbuf));
 #endif
-
                     ping_status = 0;
                     os_timer_arm(&beacon_timer, BEACON_TIME, 0);
+					ESP_DBG("%s\n", pbuf);
+					
+					os_free(pHttpBody);
                     os_free(pbuf);
                 }
             }
@@ -420,30 +590,6 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
     }
 }
 
-/******************************************************************************
- * FunctionName : user_platform_rpc_set_rsp
- * Description  : response the message to server to show setting info is received
- * Parameters   : pespconn -- the espconn used to connetion with the host
- *                nonce -- mark the message received from server
- * Returns      : none
-*******************************************************************************/
-LOCAL void ICACHE_FLASH_ATTR
-user_platform_rpc_set_rsp(struct espconn *pespconn, int nonce)
-{
-    char *pbuf = (char *)os_zalloc(packet_size);
-
-    if (pespconn == NULL) {
-        return;
-    }
-
-    ESP_DBG("%s\n", pbuf);
-#ifdef CLIENT_SSL_ENABLE
-    espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
-#else
-    espconn_sent(pespconn, pbuf, os_strlen(pbuf));
-#endif
-    os_free(pbuf);
-}
 
 /******************************************************************************
  * FunctionName : user_platform_timer_get
@@ -454,9 +600,8 @@ user_platform_rpc_set_rsp(struct espconn *pespconn, int nonce)
 LOCAL void ICACHE_FLASH_ATTR
 user_platform_timer_get(struct espconn *pespconn)
 {
-    uint8 devkey[token_size] = {0};
+
     char *pbuf = (char *)os_zalloc(packet_size);
-    os_memcpy(devkey, esp_param.devkey, 40);
 
     if (pespconn == NULL) {
         return;
@@ -482,11 +627,9 @@ user_esp_platform_upgrade_rsp(void *arg)
 {
     struct upgrade_server_info *server = arg;
     struct espconn *pespconn = server->pespconn;
-    uint8 devkey[41] = {0};
     uint8 *pbuf = NULL;
     char *action = NULL;
 
-    os_memcpy(devkey, esp_param.devkey, 40);
     pbuf = (char *)os_zalloc(packet_size);
 
     if (server->upgrade_flag == true) {
@@ -538,11 +681,9 @@ LOCAL void ICACHE_FLASH_ATTR
 user_esp_platform_upgrade_begin(struct espconn *pespconn, struct upgrade_server_info *server)
 {
     uint8 user_bin[9] = {0};
-    uint8 devkey[41] = {0};
 
     server->pespconn = pespconn;
 
-    os_memcpy(devkey, esp_param.devkey, 40);
     os_memcpy(server->ip, pespconn->proto.tcp->remote_ip, 4);
 
 #ifdef UPGRADE_SSL_ENABLE
@@ -564,9 +705,6 @@ user_esp_platform_upgrade_begin(struct espconn *pespconn, struct upgrade_server_
         os_memcpy(user_bin, "user1.bin", 10);
     }
 
-    os_sprintf(server->url, "GET /v1/device/rom/?action=download_rom&version=%s&filename=%s HTTP/1.0\r\nHost: "IPSTR":%d\r\n"pheadbuffer"",
-               server->upgrade_version, user_bin, IP2STR(server->ip),
-               server->port, devkey);
     ESP_DBG("%s\n",server->url);
 
 #ifdef UPGRADE_SSL_ENABLE
@@ -605,128 +743,27 @@ user_esp_platform_recv_cb(void *arg, char *pusrdata, unsigned short length)
     } 
 	else 
 	{
-        struct espconn *pespconn = (struct espconn *)arg;
-
-        os_memcpy(pbuffer + os_strlen(pbuffer), pusrdata, length);
-
-        if ((pstr = (char *)os_strstr(pbuffer, "\"activate_status\": ")) != NULL &&
-                user_esp_platform_parse_nonce(pbuffer) == active_nonce) 
-        {
-            if (os_strncmp(pstr + 19, "1", 1) == 0) {
-                ESP_DBG("device activates successful.\n");
-
-                device_status = DEVICE_ACTIVE_DONE;
-                esp_param.activeflag = 1;
-                system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
-                user_esp_platform_sent(pespconn);
-            } 
-			else 
-			{
-                ESP_DBG("device activates failed.\n");
-                device_status = DEVICE_ACTIVE_FAIL;
-            }
-        }
-        else if ((pstr = (char *)os_strstr(pbuffer, "\"action\": \"sys_upgrade\"")) != NULL) 
-		{
-            if ((pstr = (char *)os_strstr(pbuffer, "\"version\":")) != NULL) {
-                struct upgrade_server_info *server = NULL;
-                int nonce = user_esp_platform_parse_nonce(pbuffer);
-                user_platform_rpc_set_rsp(pespconn, nonce);
-
-                server = (struct upgrade_server_info *)os_zalloc(sizeof(struct upgrade_server_info));
-                os_memcpy(server->upgrade_version, pstr + 12, 16);
-                server->upgrade_version[15] = '\0';
-                os_sprintf(server->pre_version,"%s%d.%d.%dt%d(%s)",VERSION_TYPE,IOT_VERSION_MAJOR,\
-                    	IOT_VERSION_MINOR,IOT_VERSION_REVISION,device_type,UPGRADE_FALG);
-                user_esp_platform_upgrade_begin(pespconn, server);
-            }
-        } else if ((pstr = (char *)os_strstr(pbuffer, "\"action\": \"sys_reboot\"")) != NULL) {
-            os_timer_disarm(&client_timer);
-            os_timer_setfn(&client_timer, (os_timer_func_t *)system_upgrade_reboot, NULL);
-            os_timer_arm(&client_timer, 1000, 0);
-        } else if ((pstr = (char *)os_strstr(pbuffer, "/v1/device/timers/")) != NULL) {
-            int nonce = user_esp_platform_parse_nonce(pbuffer);
-            user_platform_rpc_set_rsp(pespconn, nonce);
-            os_timer_disarm(&client_timer);
-            os_timer_setfn(&client_timer, (os_timer_func_t *)user_platform_timer_get, pespconn);
-            os_timer_arm(&client_timer, 2000, 0);
-        } else if ((pstr = (char *)os_strstr(pbuffer, "\"method\": ")) != NULL) {
-            if (os_strncmp(pstr + 11, "GET", 3) == 0) {
-                user_esp_platform_get_info(pespconn, pbuffer);
-            } else if (os_strncmp(pstr + 11, "POST", 4) == 0) {
-                user_esp_platform_set_info(pespconn, pbuffer);
-            }
-        } else if ((pstr = (char *)os_strstr(pbuffer, "ping success")) != NULL) {
-            ESP_DBG("ping success\n");
-            ping_status = 1;
-        } else if ((pstr = (char *)os_strstr(pbuffer, "send message success")) != NULL) {
-        } else if ((pstr = (char *)os_strstr(pbuffer, "timers")) != NULL) {
-            user_platform_timer_start(pusrdata , pespconn);
-        }
-        else if ((pstr = (char *)os_strstr(pbuffer, "device")) != NULL) {
-            user_platform_timer_get(pespconn);
-        }
-
-        os_memset(pbuffer, 0, sizeof(pbuffer));
-    }
+		 ping_status = 1;
+	}
 
     os_timer_arm(&beacon_timer, BEACON_TIME, 0);
 }
 
-#if AP_CACHE
-/******************************************************************************
- * FunctionName : user_esp_platform_ap_change
- * Description  : add the user interface for changing to next ap ID.
- * Parameters   :
- * Returns      : none
-*******************************************************************************/
-LOCAL void ICACHE_FLASH_ATTR
-user_esp_platform_ap_change(void)
-{
-    uint8 current_id;
-    uint8 i = 0;
-    ESP_DBG("user_esp_platform_ap_is_changing\n");
-
-    current_id = wifi_station_get_current_ap_id();
-    ESP_DBG("current ap id =%d\n", current_id);
-
-    if (current_id == AP_CACHE_NUMBER - 1) {
-       i = 0;
-    } else {
-       i = current_id + 1;
-    }
-    while (wifi_station_ap_change(i) != true) {
-       i++;
-       if (i == AP_CACHE_NUMBER - 1) {
-    	   i = 0;
-       }
-    }
-
-    /* just need to re-check ip while change AP */
-    device_recon_count = 0;
-    os_timer_disarm(&client_timer);
-    os_timer_setfn(&client_timer, (os_timer_func_t *)user_esp_platform_check_ip, NULL);
-    os_timer_arm(&client_timer, 100, 0);
-}
-#endif
 
 LOCAL bool ICACHE_FLASH_ATTR
 user_esp_platform_reset_mode(void)
 {
+	/********************************* 
+	* 三种情况调用此函数 
+	* 1.连不上路由器
+	* 2.TCP连接超时(5次)
+	* 3.域名解析失败(5次)
+	*********************************/
     if (wifi_get_opmode() == STATION_MODE) 
 	{
 		/* 连接不上后台切换到初始模式 */
         wifi_set_opmode(STATIONAP_MODE);
     }
-
-#if AP_CACHE
-    /* delay 5s to change AP */
-    os_timer_disarm(&client_timer);
-    os_timer_setfn(&client_timer, (os_timer_func_t *)user_esp_platform_ap_change, NULL);
-    os_timer_arm(&client_timer, 5000, 0);
-
-    return true;
-#endif
 
     return false;
 }
@@ -852,7 +889,6 @@ user_esp_platform_dns_found(const char *name, ip_addr_t *ipaddr, void *arg)
         os_memcpy(pespconn->proto.tcp->remote_ip, &ipaddr->addr, 4);
 
         pespconn->proto.tcp->local_port = espconn_port();
-
 #ifdef CLIENT_SSL_ENABLE
         pespconn->proto.tcp->remote_port = 8443;
 #else
@@ -861,9 +897,10 @@ user_esp_platform_dns_found(const char *name, ip_addr_t *ipaddr, void *arg)
         ping_status = 1;	// 启动向后台发起心跳包的标志
 
 		/* 作为客户端连接后台服务器 */
+		/* 注册 TCP 连接成功建立后的回调函数 */
         espconn_regist_connectcb(pespconn, user_esp_platform_connect_cb);
-        espconn_regist_disconcb(pespconn, user_esp_platform_discon_cb);
-        espconn_regist_reconcb(pespconn, user_esp_platform_recon_cb);
+        espconn_regist_disconcb(pespconn, user_esp_platform_discon_cb); // TCP正常断开，再踹一次包 
+        espconn_regist_reconcb(pespconn, user_esp_platform_recon_cb);	// TCP异常断开，会重新踹五次包
         user_esp_platform_connect(pespconn);
     }
 }
@@ -962,9 +999,12 @@ user_esp_platform_check_ip(uint8 reset_flag)
         /* if there are wrong while connecting to some AP, then reset mode */
         if ((wifi_station_get_connect_status() == STATION_WRONG_PASSWORD ||
                 wifi_station_get_connect_status() == STATION_NO_AP_FOUND ||
-                wifi_station_get_connect_status() == STATION_CONNECT_FAIL)) {
+                wifi_station_get_connect_status() == STATION_CONNECT_FAIL)) 
+        {
             user_esp_platform_reset_mode();
-        } else {
+        } 
+		else 
+		{
             os_timer_setfn(&client_timer, (os_timer_func_t *)user_esp_platform_check_ip, NULL);
             os_timer_arm(&client_timer, 100, 0);
         }
@@ -980,62 +1020,22 @@ user_esp_platform_check_ip(uint8 reset_flag)
 void ICACHE_FLASH_ATTR
 user_esp_platform_init(void)
 {
-
 	os_sprintf(iot_version,"%s%d.%d.%dt%d(%s)",VERSION_TYPE,IOT_VERSION_MAJOR,\
 	IOT_VERSION_MINOR,IOT_VERSION_REVISION,device_type,UPGRADE_FALG);
 	os_printf("IOT VERSION = %s\n",iot_version);
+
 	/* 读取系统参数 */
 	system_param_load(ESP_PARAM_START_SEC, 0, &esp_param, sizeof(esp_param));
-
-	struct rst_info *rtc_info = system_get_rst_info();
-
-	os_printf("reset reason: %x\n", rtc_info->reason);
-
-	if (rtc_info->reason == REASON_WDT_RST ||
-		rtc_info->reason == REASON_EXCEPTION_RST ||
-		rtc_info->reason == REASON_SOFT_WDT_RST) 
+	if (esp_param.flag != 0xabcd)
 	{
-		if (rtc_info->reason == REASON_EXCEPTION_RST) 
-		{
-			os_printf("Fatal exception (%d):\n", rtc_info->exccause);
-		}
-		os_printf("epc1=0x%08x, epc2=0x%08x, epc3=0x%08x, excvaddr=0x%08x, depc=0x%08x\n",
-				rtc_info->epc1, rtc_info->epc2, rtc_info->epc3, rtc_info->excvaddr, rtc_info->depc);
+		/* 第一次上电 系统参数初始化 */
+		esp_param.flag = 0xabcd;
+		esp_param.activeflag = 0;
+		esp_param.BID = 0x55aa;
+		os_memcpy(esp_param.devkey, "12365489", 8);
+		os_printf("BID=%d\r\n", esp_param.BID);
+		system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
 	}
-#if 0
-	/*** saving ip_info to avoid dhcp_client start****/
-    struct dhcp_client_info dhcp_info;
-    struct ip_info sta_info;
-    system_rtc_mem_read(64,&dhcp_info,sizeof(struct dhcp_client_info));
-
-	/* 判断是否使用静态IP */
-	if(dhcp_info.flag == 0x01 ) 
-	{
-		if (true == wifi_station_dhcpc_status())
-		{
-			wifi_station_dhcpc_stop();
-		}
-		sta_info.ip = dhcp_info.ip_addr;
-		sta_info.gw = dhcp_info.gw;
-		sta_info.netmask = dhcp_info.netmask;
-		if ( true != wifi_set_ip_info(STATION_IF,&sta_info)) 
-		{
-			os_printf("set default ip wrong\n");
-		}
-	}
-    os_memset(&dhcp_info,0,sizeof(struct dhcp_client_info));
-    system_rtc_mem_write(64,&dhcp_info,sizeof(struct rst_info));
-
-
-#if AP_CACHE
-	/*  
-	    设置 ESP8266 station 最多可记录几个 AP 的信息。 
-		ESP8266 station成功连一个AP时，可以保存AP的SSID和password记录。
-        本设置如果与原设置不同，会更新保存到 flash 系统参数区。
-	*/
-    wifi_station_ap_number_set(AP_CACHE_NUMBER);
-#endif
-#endif
     if (esp_param.activeflag != 1) 
 	{
 		/* 启动默认的STA-AP模式(出厂设置) */			

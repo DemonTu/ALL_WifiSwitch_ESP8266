@@ -5,7 +5,7 @@
 
 /* NOTICE---this is for 512KB spi flash.
  * you can change to other sector if you use other size spi flash. */
-#define PRIV_PARAM_START_SEC		0x3C
+#define PRIV_PARAM_START_SEC		0x101
 
 #define PRIV_PARAM_SAVE     0
 

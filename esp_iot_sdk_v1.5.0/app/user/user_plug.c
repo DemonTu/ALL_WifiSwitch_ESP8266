@@ -110,7 +110,7 @@ user_link_led_timer_init(void)
 {
     os_timer_disarm(&link_led_timer);
     os_timer_setfn(&link_led_timer, (os_timer_func_t *)user_link_led_timer_cb, NULL);
-    os_timer_arm(&link_led_timer, 50, 1);
+    os_timer_arm(&link_led_timer, 200, 1);
     link_led_level = 0;
     GPIO_OUTPUT_SET(GPIO_ID_PIN(PLUG_LINK_LED_IO_NUM), link_led_level);
 }
