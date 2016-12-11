@@ -50,6 +50,43 @@ http_request_data_fill(char *sBuf, char *outBuf, ProtocolType method)
 	os_free(httphead);
 }
 
+/******************************************************************************
+ * FunctionName : http_response_data_fill
+ * Description  : processing the data as http format and send to the client or server
+ * Parameters   : arg -- argument to set for client or server
+ *                responseOK -- true or false
+ *                psend -- The send data
+ * Returns      :
+*******************************************************************************/
+void ICACHE_FLASH_ATTR
+http_response_data_fill(char *sBuf, char *outBuf, bool responseOK)
+{
+    uint16 length = 0;
+    char *httphead = (char *)os_malloc(httpHead_size);
+
+	switch(responseOK)
+	{
+		case 0:
+			length = os_sprintf(httphead, "HTTP/1.1 400 BadRequest\r\nContent-Length: 0\r\n"pheadbuffer"");
+			os_memcpy(outBuf, httphead, length);
+			break;
+		case 1:			
+			length = os_sprintf(httphead, 
+							"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"pheadbuffer"",
+							sBuf ? os_strlen(sBuf) : 0);
+			os_memcpy(outBuf, httphead, length);
+			if (sBuf)
+			{
+				os_memcpy(outBuf+length, sBuf, os_strlen(sBuf));
+			}
+            
+			break;
+		default:
+			break;
+	}
+	os_free(httphead);
+}
+
 
 /******************************************************************************
  * FunctionName : http_parse_request_url
@@ -61,7 +98,8 @@ http_request_data_fill(char *sBuf, char *outBuf, ProtocolType method)
 void ICACHE_FLASH_ATTR
 http_parse_request_url(char *precv, URL_Frame *purl_frame)
 {
-    char *str = NULL;
+    char *str = NULL;	
+    char *strtemp = NULL;
     uint8 length = 0;
     char *pbuffer = NULL;
     char *pbufer = NULL;
@@ -70,7 +108,7 @@ http_parse_request_url(char *precv, URL_Frame *purl_frame)
         return;
     }
 
-    pbuffer = (char *)os_strstr(precv, "Host:");
+    pbuffer = (char *)os_strstr(precv, "\r\n");
 
     if (pbuffer != NULL) 
 	{
@@ -95,8 +133,12 @@ http_parse_request_url(char *precv, URL_Frame *purl_frame)
 
         if (str != NULL) 
 		{
+			strtemp = (char *)os_strstr(pbuffer, "//");
+			strtemp += 2;
+			pbuffer = (char *)os_strstr(strtemp, "/");
+			
             length = str - pbuffer;
-            os_memcpy(purl_frame->pSelect, pbuffer, length);
+            os_memcpy(purl_frame->pSelect, (++pbuffer), length);
             str ++;
             pbuffer = (char *)os_strstr(str, "=");
 
@@ -132,6 +174,7 @@ http_parse_request_url(char *precv, URL_Frame *purl_frame)
     }
 }
 
+
 /******************************************************************************
  * FunctionName : http_check_data
  * Description  : check the received data from the server
@@ -152,7 +195,8 @@ http_check_data(char *precv, uint16 length)
     uint32 contentLength = 0;
     ptemp = (char *)os_strstr(precv, "\r\n\r\n");
     
-    if (ptemp != NULL) {
+    if (ptemp != NULL) 
+	{
         tmp_length -= ptemp - precv;
         tmp_length -= 4;
         tmp_totallength += tmp_length;
@@ -176,6 +220,10 @@ http_check_data(char *precv, uint16 length)
             }
         }
     }
+	else
+	{
+		return false;
+	}
     return true;
 }
 

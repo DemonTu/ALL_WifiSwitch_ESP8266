@@ -45,14 +45,18 @@ user_plug_get_status(void)
 void ICACHE_FLASH_ATTR
 user_plug_set_status(bool status)
 {
+	os_printf("cur=%d,bak=%d\n", status, plug_param.status);
     if (status != plug_param.status) {
         if (status > 1) {
             os_printf("error status input!\n");
             return;
         }
-
         plug_param.status = status;
         PLUG_STATUS_OUTPUT(PLUG_RELAY_LED_IO_NUM, status);
+			
+	    spi_flash_erase_sector(PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE);
+	    spi_flash_write((PRIV_PARAM_START_SEC + PRIV_PARAM_SAVE) * SPI_FLASH_SEC_SIZE,
+	        		(uint32 *)&plug_param, sizeof(struct plug_saved_param));
     }
 }
 

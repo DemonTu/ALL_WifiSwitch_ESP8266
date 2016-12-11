@@ -39,18 +39,27 @@
 ip_addr_t esp_server_ip;
 #endif
 
-LOCAL uint8 ping_status;
-LOCAL uint8 device_status;
-LOCAL uint8 device_recon_count = 0;
-LOCAL uint8 iot_version[20] = {0};
-
 LOCAL os_timer_t beacon_timer;
-LOCAL os_timer_t client_timer;
+LOCAL os_timer_t client_timer;	// 域名解析 和 路由连接 共用一个时间结构
 
 LOCAL struct espconn user_conn;
 LOCAL struct _esp_tcp user_tcp;
 
-struct esp_platform_saved_param esp_param;
+LOCAL char pSendBuf[packet_size];
+LOCAL char pHttpBody[httpBody_size];
+
+struct esp_platform_saved_param esp_system_param;
+/******************************************************************************/
+typedef struct
+{
+	uint8 ping_status;			// 心跳包发送状态
+	uint8 device_recon_count;	// 网络重链接或域名解析次数
+    uint8 device_status;		// 设备状态
+    uint8 rc_flag;
+	uint8 reg_ack_flag;
+	uint8 hb_ack_flag;
+}ESP_PARA_STR;
+LOCAL ESP_PARA_STR esp_param;
 
 
 /******************************************************************************/
@@ -69,7 +78,7 @@ LOCAL int ICACHE_FLASH_ATTR
 regFillData(struct jsontree_context *js_ctx)
 {
     const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
-    char string[32];
+    char string[32]={0};
 
     if (os_strncmp(path, "cmd", 3) == 0) 
 	{
@@ -78,32 +87,133 @@ regFillData(struct jsontree_context *js_ctx)
 	else if (os_strncmp(path, "key", 3) == 0) 
     {
     	// 有待修改
-        os_sprintf(string, "%s", "12345678");
+        //os_sprintf(string, "%s", esp_system_param.devkey);
+        os_memcpy(string, esp_system_param.devkey, sizeof(esp_system_param.devkey));
     } 
 	else if (os_strncmp(path, "deviceID", 8) == 0) 
     {
     	// 有待修改
-    	os_sprintf(string, "%s", "0123456789000000");
+    	//os_sprintf(string, "%s", esp_system_param.deviceID);
+        os_memcpy(string, esp_system_param.deviceID, sizeof(esp_system_param.deviceID));
     }
-
     jsontree_write_string(js_ctx, string);
 
     return 0;
 }
 
-LOCAL struct jsontree_callback reg_callback =
-    JSONTREE_CALLBACK(regFillData, NULL);
 
+/******************************************************************************
+ * FunctionName : reg_bid_set
+ * Description  : set the device BID
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+reg_bid_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
+{
+	int type;
+	int resFlag = 0;
+	char buffer[20];	
+	ESP_DBG("regack json=%s\r\n", parser->json);
+	while ((type = jsonparse_next(parser)) != 0)
+	{
+		if (type == JSON_TYPE_PAIR_NAME) 
+		{
+			os_bzero(buffer, sizeof(buffer));
+			if ((jsonparse_strcmp_value(parser, "Response")==0) || (resFlag==1))
+			{
+				resFlag = 1;
+				if (jsonparse_strcmp_value(parser, "cmd") == 0)
+				{
+					jsonparse_next(parser);
+					jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, "REGACK", 6))
+					{
+						ESP_DBG("reg REGACK err=%s\r\n", buffer);
+						break;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "key") == 0)
+				{
+					jsonparse_next(parser);
+					jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_system_param.devkey, 
+										sizeof(esp_system_param.devkey)))
+					{
+						ESP_DBG("reg key err=%s\r\n", buffer);
+						break;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "deviceID") == 0)
+				{
+					jsonparse_next(parser);
+					jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_system_param.deviceID, 
+										sizeof(esp_system_param.deviceID)))
+					{
+						ESP_DBG("reg deviceID err=%s\r\n", buffer);
+						break;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "BID") == 0)
+				{
+					jsonparse_next(parser);
+					jsonparse_next(parser);
+					esp_system_param.BID = jsonparse_get_value_as_int(parser);						
+					os_printf("reg BID=%d\r\n", esp_system_param.BID);
+					system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_system_param, sizeof(esp_system_param));
+
+					/* 注册成功, 启动心跳包*/					
+					esp_param.ping_status = 1;	// 每50s发一次心跳包
+					os_timer_arm(&beacon_timer, BEACON_TIME, 0);
+				}
+				else
+				{
+					ESP_DBG("reg json1 error\r\n");
+					break;
+				}
+			}
+			else
+			{
+				ESP_DBG("reg json2 error\r\n");
+				break;
+			}
+		}
+	}
+	return 0;
+}
+
+
+
+LOCAL struct jsontree_callback reg_callback =
+    JSONTREE_CALLBACK(regFillData, reg_bid_set);
+//===================== request ======================================
 JSONTREE_OBJECT(reg_request_tree,
                 JSONTREE_PAIR("cmd", 	  &reg_callback),
                 JSONTREE_PAIR("key",      &reg_callback),
                 JSONTREE_PAIR("deviceID", &reg_callback),
                 );
-JSONTREE_OBJECT(reg_tree,
+JSONTREE_OBJECT(reg_req_tree,
                 JSONTREE_PAIR("Request", &reg_request_tree));
 
-JSONTREE_OBJECT(RegTree,
-                JSONTREE_PAIR("reg", &reg_tree));
+JSONTREE_OBJECT(RegReqTree,
+                JSONTREE_PAIR("regreq", &reg_req_tree));
+
+//=============== respone ===========================================
+JSONTREE_OBJECT(reg_response_tree,
+                JSONTREE_PAIR("cmd", 	  &reg_callback),
+                JSONTREE_PAIR("key",      &reg_callback),
+                JSONTREE_PAIR("deviceID", &reg_callback),
+				JSONTREE_PAIR("BID",      &reg_callback),
+                );
+JSONTREE_OBJECT(reg_res_tree,
+                JSONTREE_PAIR("Response", &reg_response_tree));
+
+JSONTREE_OBJECT(RegResTree,
+                JSONTREE_PAIR("regres", &reg_res_tree));
 
 
 /******************************************************************************/
@@ -118,35 +228,110 @@ LOCAL int ICACHE_FLASH_ATTR
 hbFillData(struct jsontree_context *js_ctx)
 {
     const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
-    char string[32];
+    char string[32]={0};
 
     if (os_strncmp(path, "cmd", 3) == 0) 
 	{
         os_sprintf(string, "PING");
+		jsontree_write_string(js_ctx, string);
     } 
 	else if (os_strncmp(path, "key", 3) == 0) 
     {
     	// 有待修改
-        os_sprintf(string, "%s", "12345678");
+        os_memcpy(string, esp_system_param.devkey, sizeof(esp_system_param.devkey));
+		jsontree_write_string(js_ctx, string);
     } 
 	else if (os_strncmp(path, "deviceID", 8) == 0) 
     {
     	// 有待修改
-    	os_sprintf(string, "%s", "0123456789000000");
+        os_memcpy(string, esp_system_param.deviceID, sizeof(esp_system_param.deviceID));
+		jsontree_write_string(js_ctx, string);
     }
 	else if (os_strncmp(path, "BID") == 0)
 	{
-		 jsontree_write_int(js_ctx, 0x55aa); //esp_param.BID);
+		 jsontree_write_int(js_ctx, esp_system_param.BID);
 		 return 0;
 	}
-
-    jsontree_write_string(js_ctx, string);
 
     return 0;
 }
 
+
+/******************************************************************************
+ * FunctionName : status_set
+ * Description  : parse the device status parmer as a JSON format
+ * Parameters   : js_ctx -- A pointer to a JSON set up
+ *                parser -- A pointer to a JSON parser state
+ * Returns      : result
+*******************************************************************************/
+LOCAL int ICACHE_FLASH_ATTR
+hb_ack_parse(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
+{
+    int type;
+	int pingFlag = 0;
+    char buffer[20];	
+	ESP_DBG("hback json=%s\r\n", parser->json);
+    while ((type = jsonparse_next(parser)) != 0)
+	{
+        if (type == JSON_TYPE_PAIR_NAME) 
+		{
+			os_bzero(buffer, sizeof(buffer));
+			if ((jsonparse_strcmp_value(parser, "Response")==0) || (pingFlag==1))
+			{
+				pingFlag = 1;
+	            if (jsonparse_strcmp_value(parser, "cmd") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, "PINGACK", 7))
+					{
+						ESP_DBG("PINGACK err=%s\r\n", buffer);
+						break;
+					}
+	            }
+				else if (jsonparse_strcmp_value(parser, "key") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_system_param.devkey, 
+										sizeof(esp_system_param.devkey)))
+					{
+						ESP_DBG("key err=%s\r\n", buffer);
+						break;
+					}
+				}
+				else if (jsonparse_strcmp_value(parser, "deviceID") == 0)
+				{
+					jsonparse_next(parser);
+	                jsonparse_next(parser);
+					jsonparse_copy_value(parser, buffer, sizeof(buffer));
+					if (os_memcmp(buffer, esp_system_param.deviceID, 
+										sizeof(esp_system_param.deviceID)))
+					{
+						ESP_DBG("deviceID err=%s\r\n", buffer);
+						break;
+					}					
+				}				
+				else
+				{
+					ESP_DBG("hb json1 err=%s\r\n", buffer);
+					break;
+				}
+			}
+			else
+			{
+				ESP_DBG("hb json2 err=%s\r\n", buffer);
+				break;
+			}
+        }
+    }
+	return 0;
+}
+
 LOCAL struct jsontree_callback hb_callback =
-    JSONTREE_CALLBACK(hbFillData, NULL);
+    JSONTREE_CALLBACK(hbFillData, hb_ack_parse);
 
 JSONTREE_OBJECT(hb_request_tree,
                 JSONTREE_PAIR("cmd", 	  &hb_callback),
@@ -154,18 +339,31 @@ JSONTREE_OBJECT(hb_request_tree,
                 JSONTREE_PAIR("deviceID", &hb_callback),
 				JSONTREE_PAIR("BID", 	  &hb_callback),
                 );
-JSONTREE_OBJECT(hb_tree,
+JSONTREE_OBJECT(hb_req_tree,
                 JSONTREE_PAIR("Request", &hb_request_tree));
 
-JSONTREE_OBJECT(HBTree,
-                JSONTREE_PAIR("hb", &hb_tree));
+JSONTREE_OBJECT(HBReqTree,
+                JSONTREE_PAIR("hbreq", &hb_req_tree));
+
+//=============== response ==================================
+JSONTREE_OBJECT(hb_response_tree,
+                JSONTREE_PAIR("cmd", 	  &hb_callback),
+                JSONTREE_PAIR("key",      &hb_callback),
+                JSONTREE_PAIR("deviceID", &hb_callback),
+                );
+JSONTREE_OBJECT(hb_res_tree,
+                JSONTREE_PAIR("Response", &hb_response_tree));
+
+JSONTREE_OBJECT(HBResTree,
+                JSONTREE_PAIR("hbres", &hb_res_tree));
+
 
 /******************************************************************************/
 //远程控制开关
 #if PLUG_DEVICE
 /******************************************************************************
- * FunctionName : status_get
- * Description  : set up the device status as a JSON format
+ * FunctionName : rcFillData
+ * Description  : 远程控制开关应答json
  * Parameters   : js_ctx -- A pointer to a JSON set up
  * Returns      : result
 *******************************************************************************/
@@ -173,34 +371,34 @@ LOCAL int ICACHE_FLASH_ATTR
 rcFillData(struct jsontree_context *js_ctx)
 {
     const char *path = jsontree_path_name(js_ctx, js_ctx->depth - 1);
-    char string[32];
+    char string[32]={0};
 
     if (os_strncmp(path, "cmd", 3) == 0) 
 	{
         os_sprintf(string, "RCACK");
+		jsontree_write_string(js_ctx, string);
     } 
 	else if (os_strncmp(path, "key", 3) == 0) 
     {
     	// 有待修改
-        os_sprintf(string, "%s", "12345678");
+        os_memcpy(string, esp_system_param.devkey, sizeof(esp_system_param.devkey));
+		jsontree_write_string(js_ctx, string);
     } 
 	else if (os_strncmp(path, "deviceID", 8) == 0) 
     {
     	// 有待修改
-    	os_sprintf(string, "%s", "0123456789000000");
-    }
+        os_memcpy(string, esp_system_param.deviceID, sizeof(esp_system_param.deviceID));		
+		jsontree_write_string(js_ctx, string);
+	}
 	else if (os_strncmp(path, "status", 8) == 0) 
 	{
         jsontree_write_int(js_ctx, user_plug_get_status());	
 	}
 	else if (os_strncmp(path, "BID") == 0)
 	{
-		 jsontree_write_int(js_ctx, esp_param.BID);
+		 jsontree_write_int(js_ctx, esp_system_param.BID);
 		 return 0;
 	}
-
-    jsontree_write_string(js_ctx, string);
-
     return 0;
 }
 
@@ -218,7 +416,7 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 	int reqFlag = 0;
 	int errorFlag = 0;
     char buffer[20];	
-	 
+	ESP_DBG("json=%s\r\n", parser->json);
     while ((type = jsonparse_next(parser)) != 0)
 	{
         if (type == JSON_TYPE_PAIR_NAME) 
@@ -234,6 +432,7 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 					jsonparse_copy_value(parser, buffer, sizeof(buffer));
 					if (os_memcmp(buffer, "RC", 2))
 					{
+						ESP_DBG("RC=%s\r\n", buffer);
 						errorFlag++;
 					}
 	            }
@@ -242,9 +441,10 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 					jsonparse_next(parser);
 	                jsonparse_next(parser);
 					jsonparse_copy_value(parser, buffer, sizeof(buffer));
-					if (os_memcmp(buffer, esp_param.devkey, 
-										sizeof(esp_param.devkey)))
+					if (os_memcmp(buffer, esp_system_param.devkey, 
+										sizeof(esp_system_param.devkey)))
 					{
+						ESP_DBG("key=%s\r\n", buffer);
 						errorFlag++;
 					}
 				}
@@ -253,9 +453,10 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 					jsonparse_next(parser);
 	                jsonparse_next(parser);
 					jsonparse_copy_value(parser, buffer, sizeof(buffer));
-					if (os_memcmp(buffer, esp_param.deviceID, 
-										sizeof(esp_param.deviceID)))
+					if (os_memcmp(buffer, esp_system_param.deviceID, 
+										sizeof(esp_system_param.deviceID)))
 					{
+						ESP_DBG("deviceID=%s\r\n", buffer);
 						errorFlag++;
 					}
 				}
@@ -266,13 +467,13 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 						jsonparse_next(parser);
 	                	jsonparse_next(parser);
 	                	user_plug_set_status(jsonparse_get_value_as_int(parser));
+						esp_param.rc_flag = 1;
 					}
 				}
 				else
 				{
 					// 错误码
 				}
-				ESP_DBG("%s\n", buffer);
 			}
 			else
 			{
@@ -280,7 +481,8 @@ rc_status_set(struct jsontree_context *js_ctx, struct jsonparse_state *parser)
 			}
         }
     }
-
+	
+	ESP_DBG("error=%d\n", errorFlag);
     return 0;
 }
 
@@ -321,7 +523,7 @@ JSONTREE_OBJECT(RcReqTree,
 uint16 ICACHE_FLASH_ATTR
 user_esp_platform_get_bid(void)
 {
-	return esp_param.BID;
+	return esp_system_param.BID;
 }
 
 /******************************************************************************
@@ -333,9 +535,30 @@ user_esp_platform_get_bid(void)
 void ICACHE_FLASH_ATTR
 user_esp_platform_set_bid(uint16_t BID)
 {
-	esp_param.BID = BID;
-    system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
+	esp_system_param.BID = BID;
+    system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_system_param, sizeof(esp_system_param));
 }
+
+
+/******************************************************************************
+ * FunctionName : user_esp_platform_set_token
+ * Description  : save the token for the espressif's device
+ * Parameters   : token -- the parame point which write the flash
+ * Returns      : none
+*******************************************************************************/
+bool ICACHE_FLASH_ATTR
+user_esp_platform_is_register(void)
+{
+	if ((0 == esp_system_param.BID) || (0xffff == esp_system_param.BID))
+	{
+		return FALSE;
+	}
+	else
+	{
+		return TRUE;
+	}
+}
+
 
 /******************************************************************************
  * FunctionName : user_esp_platform_set_active
@@ -346,35 +569,15 @@ user_esp_platform_set_bid(uint16_t BID)
 void ICACHE_FLASH_ATTR
 user_esp_platform_set_active(uint8 activeflag)
 {
-    esp_param.activeflag = activeflag;
+    esp_system_param.activeflag = activeflag;
 
-    system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
+    system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_system_param, sizeof(esp_system_param));
 }
 
 void ICACHE_FLASH_ATTR
 user_esp_platform_set_connect_status(uint8 status)
 {
-    device_status = status;
-}
-
-/******************************************************************************
- * FunctionName : user_esp_platform_get_connect_status
- * Description  : get each connection step's status
- * Parameters   : none
- * Returns      : status
-*******************************************************************************/
-uint8 ICACHE_FLASH_ATTR
-user_esp_platform_get_connect_status(void)
-{
-    uint8 status = wifi_station_get_connect_status();
-
-    if (status == STATION_GOT_IP) 
-	{
-        status = (device_status == 0) ? DEVICE_CONNECTING : device_status;
-    }
-
-    ESP_DBG("status %d\n", status);
-    return status;
+    esp_param.device_status = status;
 }
 
 
@@ -494,35 +697,28 @@ user_esp_platform_sent_cb(void *arg)
 LOCAL void ICACHE_FLASH_ATTR
 user_esp_platform_sent(struct espconn *pespconn)
 {
-    char *pbuf = (char *)os_zalloc(packet_size);
-	char *jsonbuf = (char *)os_zalloc(httpBody_size); 
-	
-    if ((pbuf!=NULL) && (jsonbuf!=NULL)) 
+	os_memset(pSendBuf, 0, packet_size);
+	os_memset(pHttpBody, '\0', httpBody_size);
+    if (FALSE == user_esp_platform_is_register()) 
 	{
-        if (esp_param.activeflag != 1) // 待修改
-		{
-            json_ws_send((struct jsontree_value *)&RegTree, "reg", jsonbuf);
-			http_request_data_fill(jsonbuf, pbuf, POST);
-		}
-        else 
-		{
-            // 已经注册过了
-            os_free(jsonbuf);
-            os_free(pbuf);
-            return;
-        }
+		// 没有注册过
+        json_ws_send((struct jsontree_value *)&RegReqTree, "regreq", pHttpBody);
+		http_request_data_fill(pHttpBody, pSendBuf, POST);		
+		esp_param.reg_ack_flag = 1;
+	}
+    else 
+	{
+        // 已经注册过了
+        return;
+    }
 
-        ESP_DBG("%s\n", pbuf);
-
+    ESP_DBG("%s\n", pSendBuf);
 #ifdef CLIENT_SSL_ENABLE
-        espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
+    espconn_secure_sent(pespconn, pbuf, os_strlen(pbuf));
 #else
-        espconn_sent(pespconn, pbuf, os_strlen(pbuf));
+    espconn_sent(pespconn, pSendBuf, os_strlen(pSendBuf));
 #endif
 
-		os_free(jsonbuf);
-        os_free(pbuf);
-    }
 }
 
 /******************************************************************************
@@ -540,17 +736,18 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
 
     if (pespconn->state == ESPCONN_CONNECT) 
 	{
-        if (esp_param.BID != 0x55aa) 
+        if (FALSE == user_esp_platform_is_register()) 
 		{
-            ESP_DBG("please check device is activated.\n");
+            ESP_DBG("please check device is register.\n");
 			/* 未注册 重新启动注册 */
             user_esp_platform_sent(pespconn);
         }
 		else 
 		{
-            if (ping_status == 0) 
+            if (esp_param.ping_status == 0) 
 			{
-                ESP_DBG("user_esp_platform_sent_beacon sent fail!\n");
+				/* 心跳没有应答 */
+                ESP_DBG("HB no ACK!\n");
                 user_esp_platform_discon(pespconn);
             } 
 			else 
@@ -562,7 +759,7 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
 					char *pHttpBody = (char *)os_zalloc(httpBody_size);
 					if (pHttpBody != NULL)
 					{
-						json_ws_send((struct jsontree_value *)&HBTree, "hb", pHttpBody);
+						json_ws_send((struct jsontree_value *)&HBReqTree, "hbreq", pHttpBody);
 					}
 					else
 					{	
@@ -573,7 +770,8 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
 #else
                     espconn_sent(pespconn, pbuf, os_strlen(pbuf));
 #endif
-                    ping_status = 0;
+                    esp_param.ping_status = 0;					
+					esp_param.hb_ack_flag = 1;	// 等待应答
                     os_timer_arm(&beacon_timer, BEACON_TIME, 0);
 					ESP_DBG("%s\n", pbuf);
 					
@@ -585,7 +783,7 @@ user_esp_platform_sent_beacon(struct espconn *pespconn)
     } 
 	else 
 	{ 
-        ESP_DBG("user_esp_platform_sent_beacon sent fail!\n");
+        ESP_DBG("network disconnect!\n");
         user_esp_platform_discon(pespconn);
     }
 }
@@ -729,24 +927,149 @@ user_esp_platform_upgrade_begin(struct espconn *pespconn, struct upgrade_server_
 LOCAL void ICACHE_FLASH_ATTR
 user_esp_platform_recv_cb(void *arg, char *pusrdata, unsigned short length)
 {
-    char *pstr = NULL;
-    LOCAL char pbuffer[1024 * 2] = {0};
+	uint8_t sendFlag = 0;
+	char *pParseHttpBody = NULL;
+	char *pParseHttpHead = NULL;
+	struct jsontree_context js;
     struct espconn *pespconn = arg;
 
     ESP_DBG("user_esp_platform_recv_cb %s\n", pusrdata);
 
     os_timer_disarm(&beacon_timer);
 
-    if (length == 1460) 
-	{
-        os_memcpy(pbuffer, pusrdata, length);
-    } 
-	else 
-	{
-		 ping_status = 1;
+	os_printf("len:%u\n",length);
+
+	os_memset(pSendBuf, 0, packet_size);
+	os_memset(pHttpBody, 0, httpBody_size);
+	
+	/* 校验数据长度 得到json数据长度dat_sumlength */
+    if(http_check_data(pusrdata, length) == false)
+    {
+        os_printf("rx error length\r\n");
+    }
+	else
+	{		
+		/*******************************************
+		* 这边分为两部分
+		* 1.本机设备发数据给服务器后，服务器的应答数据
+		*		由""HTTP/1.1"开头的数据。
+		* 2.服务器主动发数据给本机设备
+		*		有"POST/GET"开头的数据。
+		********************************************/
+		if (0 == os_memcmp(pusrdata, "POST", 4))
+		{
+			pParseHttpBody = (char *)os_strstr(pusrdata, "\r\n\r\n");
+			if (pParseHttpBody == NULL) 
+			{
+	            ESP_DBG("rx rc req error data\r\n");
+	        }
+			else
+			{
+	            pParseHttpBody += 4;	// 指向http body 的第一个字节
+			}
+			
+			if (NULL != pParseHttpBody)
+			{	
+				jsontree_setup(&js, (struct jsontree_value *)&RcReqTree, json_putchar);
+				json_parse(&js, pParseHttpBody);
+				if (esp_param.rc_flag)
+				{					
+					esp_param.rc_flag = 0;
+					json_ws_send((struct jsontree_value *)&RcResTree, "rcResponse", pHttpBody);
+					http_response_data_fill(pHttpBody, pSendBuf, 1);
+				}
+				else
+				{
+					http_response_data_fill(NULL, pSendBuf, 0);
+				}
+				sendFlag = 1;
+			}
+		}
+		else if (0 == os_memcmp(pusrdata, "GET", 3))
+		{
+			URL_Frame urlFrameTemp;
+			http_parse_request_url(pusrdata, &urlFrameTemp);
+			ESP_DBG("s=%s\r\n", urlFrameTemp.pSelect);
+			ESP_DBG("c=%s\r\n", urlFrameTemp.pCommand);
+			ESP_DBG("f=%s\r\n", urlFrameTemp.pFilename);
+			if (0 == os_memcmp(urlFrameTemp.pSelect, "switch", 6))
+			{
+				if (0 == os_memcmp(urlFrameTemp.pCommand, "cmd", 3))
+				{
+					if (0 == os_memcmp(urlFrameTemp.pFilename, "status", 6))
+					{						
+						json_ws_send((struct jsontree_value *)&RcResTree, "rcResponse", pHttpBody);
+						http_response_data_fill(pHttpBody, pSendBuf, 1);
+					}
+					else
+					{
+						http_response_data_fill(NULL, pSendBuf, 0);
+					}
+					sendFlag = 1;
+				}
+			}
+		}
+		else if (0 == os_memcmp(pusrdata, "HTTP", 4))	
+		{
+			if(NULL != (char *)os_strstr(pusrdata, "200 OK"))
+			{
+				pParseHttpBody = (char *)os_strstr(pusrdata, "\r\n\r\n");
+				if (pParseHttpBody == NULL) 
+				{
+		            ESP_DBG("rx reg/hb res error data\r\n");
+		        }
+				else
+				{
+		            pParseHttpBody += 4;	// 指向http body 的第一个字节
+				}
+				
+				if (NULL != pParseHttpBody)
+				{	
+					if (esp_param.reg_ack_flag)
+					{
+						esp_param.reg_ack_flag = 0;
+						jsontree_setup(&js, (struct jsontree_value *)&RegResTree, json_putchar);
+						json_parse(&js, pParseHttpBody);
+					}					
+					else if (esp_param.hb_ack_flag)
+					{
+						esp_param.hb_ack_flag = 0;	
+						jsontree_setup(&js, (struct jsontree_value *)&HBResTree, json_putchar);
+						json_parse(&js, pParseHttpBody);
+					}
+				}
+			}
+			else
+			{
+				// 发送数据有错，失败的应答
+				if (esp_param.reg_ack_flag)
+				{
+					ESP_DBG("REG HTTP RES ERROR\r\n");
+				}					
+				else if (esp_param.hb_ack_flag)
+				{
+					ESP_DBG("HB HTTP RES ERROR\r\n");
+				}
+			}			
+		}
+		else
+		{
+			ESP_DBG("not need\n\r");
+		}
 	}
 
-    os_timer_arm(&beacon_timer, BEACON_TIME, 0);
+	if (sendFlag)
+	{
+	#ifdef SERVER_SSL_ENABLE
+        espconn_secure_sent(pespconn, pbuf, length);
+	#else
+        espconn_sent(pespconn, pSendBuf, os_strlen(pSendBuf));
+	#endif	
+	    ESP_DBG("%s\n", pSendBuf);
+	}
+	
+	os_timer_arm(&beacon_timer, BEACON_TIME, 0);
+	esp_param.ping_status = 1;
 }
 
 
@@ -787,10 +1110,10 @@ user_esp_platform_recon_cb(void *arg, sint8 err)
     user_link_led_output(1);
 #endif
 
-    if (++device_recon_count == 5) 
+    if (++esp_param.device_recon_count == 5) 
 	{
 		/* TCP连接超时 */
-        device_status = DEVICE_CONNECT_SERVER_FAIL;
+        esp_param.device_status = DEVICE_CONNECT_SERVER_FAIL;
 
         if (user_esp_platform_reset_mode()) {
             return;
@@ -823,7 +1146,12 @@ user_esp_platform_connect_cb(void *arg)
 	/* 链接上后台后，灯停止闪烁 */
     user_link_led_timer_done();
 #endif
-    device_recon_count = 0;
+	if (TRUE == user_esp_platform_is_register())
+	{
+		esp_param.ping_status = 1;	// 每50s发一次心跳包		
+		os_timer_arm(&beacon_timer, BEACON_TIME, 0);
+	}
+    esp_param.device_recon_count = 0;
     espconn_regist_recvcb(pespconn, user_esp_platform_recv_cb);
     espconn_regist_sentcb(pespconn, user_esp_platform_sent_cb);
     user_esp_platform_sent(pespconn);
@@ -864,13 +1192,14 @@ user_esp_platform_dns_found(const char *name, ip_addr_t *ipaddr, void *arg)
 {
     struct espconn *pespconn = (struct espconn *)arg;
 
-    if (ipaddr == NULL) {
+    if (ipaddr == NULL) 
+	{
         ESP_DBG("user_esp_platform_dns_found NULL\n");
 
-        if (++device_recon_count == 5) 
+        if (++esp_param.device_recon_count == 5) 
 		{
 			/* 域名解析超时五秒后 */	
-            device_status = DEVICE_CONNECT_SERVER_FAIL;
+            esp_param.device_status = DEVICE_CONNECT_SERVER_FAIL;
 
             user_esp_platform_reset_mode();
         }
@@ -894,7 +1223,6 @@ user_esp_platform_dns_found(const char *name, ip_addr_t *ipaddr, void *arg)
 #else
         pespconn->proto.tcp->remote_port = 8000;
 #endif
-        ping_status = 1;	// 启动向后台发起心跳包的标志
 
 		/* 作为客户端连接后台服务器 */
 		/* 注册 TCP 连接成功建立后的回调函数 */
@@ -964,12 +1292,12 @@ user_esp_platform_check_ip(uint8 reset_flag)
         user_conn.type = ESPCONN_TCP;
         user_conn.state = ESPCONN_NONE;
 
-        device_status = DEVICE_CONNECTING;
+        esp_param.device_status = DEVICE_CONNECTING;
 
         if (reset_flag) 
 		{
 			/* 上电第一次连接设置为0，重新连接则++ */
-            device_recon_count = 0;
+            esp_param.device_recon_count = 0;
         }
 		/* 初始化心跳包定时器 */
         os_timer_disarm(&beacon_timer);
@@ -978,7 +1306,8 @@ user_esp_platform_check_ip(uint8 reset_flag)
 #ifdef USE_DNS
         user_esp_platform_start_dns(&user_conn);
 #else
-        const char esp_server_ip[4] = {114, 215, 177, 97};
+   //     const char esp_server_ip[4] = {114, 215, 177, 97};
+        const char esp_server_ip[4] = {192, 168, 137, 1};
 
         os_memcpy(user_conn.proto.tcp->remote_ip, esp_server_ip, 4);
         user_conn.proto.tcp->local_port = espconn_port();
@@ -990,6 +1319,7 @@ user_esp_platform_check_ip(uint8 reset_flag)
 	#endif
 		/* 注册 TCP 连接成功建立后的回调函数 */
         espconn_regist_connectcb(&user_conn, user_esp_platform_connect_cb);
+    	espconn_regist_disconcb(&user_conn, user_esp_platform_discon_cb); // TCP正常断开，再踹一次包 
         espconn_regist_reconcb(&user_conn, user_esp_platform_recon_cb);
         user_esp_platform_connect(&user_conn);
 #endif
@@ -1020,23 +1350,21 @@ user_esp_platform_check_ip(uint8 reset_flag)
 void ICACHE_FLASH_ATTR
 user_esp_platform_init(void)
 {
-	os_sprintf(iot_version,"%s%d.%d.%dt%d(%s)",VERSION_TYPE,IOT_VERSION_MAJOR,\
-	IOT_VERSION_MINOR,IOT_VERSION_REVISION,device_type,UPGRADE_FALG);
-	os_printf("IOT VERSION = %s\n",iot_version);
-
+	os_memset(&esp_param, 0, sizeof(esp_param));
 	/* 读取系统参数 */
-	system_param_load(ESP_PARAM_START_SEC, 0, &esp_param, sizeof(esp_param));
-	if (esp_param.flag != 0xabcd)
+	system_param_load(ESP_PARAM_START_SEC, 0, &esp_system_param, sizeof(esp_system_param));
+	if (esp_system_param.flag != 0xabcd)
 	{
 		/* 第一次上电 系统参数初始化 */
-		esp_param.flag = 0xabcd;
-		esp_param.activeflag = 0;
-		esp_param.BID = 0x55aa;
-		os_memcpy(esp_param.devkey, "12365489", 8);
-		os_printf("BID=%d\r\n", esp_param.BID);
-		system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_param, sizeof(esp_param));
+		esp_system_param.flag = 0xabcd;
+		esp_system_param.activeflag = 0;
+		esp_system_param.BID = 0;
+		os_memcpy(esp_system_param.devkey, "12345678", 8);
+		os_memcpy(esp_system_param.deviceID, "0123456789000000", 16);
+		os_printf("BID=%d\r\n", esp_system_param.BID);
+		system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_system_param, sizeof(esp_system_param));
 	}
-    if (esp_param.activeflag != 1) 
+    if (esp_system_param.activeflag != 1) 
 	{
 		/* 启动默认的STA-AP模式(出厂设置) */			
         wifi_set_opmode(STATIONAP_MODE);
