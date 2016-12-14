@@ -16,7 +16,7 @@
 
 #include "HttpTool.h"
 
-#include "user_iot_version.h"
+#include "user_switch_version.h"
 #include "espconn.h"
 #include "user_json.h"
 #include "user_webserver.h"

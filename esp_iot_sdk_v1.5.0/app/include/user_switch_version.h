@@ -1,17 +1,17 @@
-#ifndef __USER_IOT_VERSION_H__
-#define __USER_IOT_VERSION_H__
+#ifndef __USER_SWITCH_VERSION_H__
+#define __USER_SWITCH_VERSION_H__
 
 #include "user_config.h"
 
-#define IOT_VERSION_MAJOR		1U
-#define IOT_VERSION_MINOR		0U
-#define IOT_VERSION_REVISION	5U
+#define IOT_VERSION_MAJOR		1U  // 主版本号
+#define IOT_VERSION_MINOR		0U  // 次要的
+#define IOT_VERSION_REVISION	0U  // 修正版本
 
 #define VERSION_NUM   (IOT_VERSION_MAJOR * 1000 + IOT_VERSION_MINOR * 100 + IOT_VERSION_REVISION)
 
 #define VERSION_TYPE   	  "v"
 
-#define device_type       23701
+#define VERSION_DATA      161213 // 日期
 
 #define ONLINE_UPGRADE    0
 #define LOCAL_UPGRADE     0

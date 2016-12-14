@@ -16,10 +16,11 @@
 #include "user_interface.h"
 
 #include "HttpTool.h"
+#include "user_flash_manage.h"
 
 #include "espconn.h"
 #include "user_esp_platform.h"
-#include "user_iot_version.h"
+#include "user_switch_version.h"
 #include "upgrade.h"
 
 #include "user_json.h"
@@ -48,7 +49,6 @@ LOCAL struct _esp_tcp user_tcp;
 LOCAL char pSendBuf[packet_size];
 LOCAL char pHttpBody[httpBody_size];
 
-struct esp_platform_saved_param esp_system_param;
 /******************************************************************************/
 typedef struct
 {
@@ -1341,6 +1341,43 @@ user_esp_platform_check_ip(uint8 reset_flag)
     }
 }
 
+
+void ICACHE_FLASH_ATTR
+user_set_station_config(void)
+{
+
+	struct station_config stationConf;
+	os_memset(&stationConf, 0, sizeof(stationConf));
+	stationConf.bssid_set = 0; //need not check MAC address of AP
+	os_memcpy(&stationConf.ssid, esp_system_param.ssid, os_strlen(esp_system_param.ssid));
+	os_memcpy(&stationConf.password, esp_system_param.password, os_strlen(esp_system_param.password));
+
+	wifi_station_set_config_current(&stationConf);
+
+}
+
+
+/******************************************************************************
+ * FunctionName : user_set_softap_config
+ * Description  : AP模式下的参数配置
+ * Parameters   : none
+ * Returns      : none
+*******************************************************************************/
+void ICACHE_FLASH_ATTR
+user_set_softap_config(void)
+{
+
+	struct softap_config softapConf;
+	os_memset(&softapConf, 0, sizeof(softapConf));
+	softapConf.channel = 5; 
+	softapConf.authmode = AUTH_OPEN;
+	os_memcpy(&softapConf.ssid, "switch_TTC", 10);
+    softapConf.ssid_len = 10;
+	wifi_softap_set_config_current(&softapConf);
+
+}
+
+
 /******************************************************************************
  * FunctionName : user_esp_platform_init
  * Description  : device parame init based on espressif platform
@@ -1350,28 +1387,21 @@ user_esp_platform_check_ip(uint8 reset_flag)
 void ICACHE_FLASH_ATTR
 user_esp_platform_init(void)
 {
-	os_memset(&esp_param, 0, sizeof(esp_param));
-	/* 读取系统参数 */
-	system_param_load(ESP_PARAM_START_SEC, 0, &esp_system_param, sizeof(esp_system_param));
-	if (esp_system_param.flag != 0xabcd)
-	{
-		/* 第一次上电 系统参数初始化 */
-		esp_system_param.flag = 0xabcd;
-		esp_system_param.activeflag = 0;
-		esp_system_param.BID = 0;
-		os_memcpy(esp_system_param.devkey, "12345678", 8);
-		os_memcpy(esp_system_param.deviceID, "0123456789000000", 16);
-		os_printf("BID=%d\r\n", esp_system_param.BID);
-		system_param_save_with_protect(ESP_PARAM_START_SEC, &esp_system_param, sizeof(esp_system_param));
-	}
+    os_memset(&esp_param, 0, sizeof(esp_param));
+
     if (esp_system_param.activeflag != 1) 
 	{
 		/* 启动默认的STA-AP模式(出厂设置) */			
         wifi_set_opmode(STATIONAP_MODE);
+        user_set_softap_config();
     }
 	else
 	{
-		/* 设备处在sta模式(已经注册过) */
+		/* 设备处在sta模式(已经设置要连接上的路由了) */
+		
+		/* 设置WiFi为STA模式，连接指定的AP */
+    	wifi_set_opmode_current(STATION_MODE);
+    	user_set_station_config();
 	}
     user_plug_init();
 

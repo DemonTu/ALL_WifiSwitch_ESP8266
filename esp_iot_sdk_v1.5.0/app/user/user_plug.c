@@ -15,6 +15,7 @@
 #include "user_interface.h"
 
 #include "user_plug.h"
+#include "user_flash_manage.h"
 
 #if PLUG_DEVICE
 
